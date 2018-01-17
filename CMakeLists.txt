@@ -153,7 +153,12 @@ include_directories(BEFORE
 
 # Find misc system libs
 find_library(LIBRT rt)   # extended Pthreads functions
-find_library(LIBNSL nsl) # sockets
+
+if(EXISTS /usr/lib64/nsl/libnsl.so)
+  set(PATH_LIBNSL "/usr/lib64/nsl/libnsl.so" CACHE_INTERNAL "libnsl2")
+else(EXISTS /usr/lib64/nsl/libnsl.so)
+  find_library(LIBNSL nsl) # sockets
+endif(EXISTS /usr/lib64/nsl/libnsl.so)
 
 set(SYSTEM_LIBRARIES
   ${LIBTIRPC_LIBRARIES}
