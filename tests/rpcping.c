@@ -45,8 +45,8 @@ struct state {
 	clock_t rtime;
 	int count;
 	int proc;
-	uint32_t requests;
 	int id;
+	uint32_t requests;
 };
 
 static int
