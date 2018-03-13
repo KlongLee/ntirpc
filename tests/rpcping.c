@@ -35,7 +35,7 @@
 
 static pthread_mutex_t rpcpring_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t rpcpring_cond = PTHREAD_COND_INITIALIZER;
-static uint32_t rpcpring_threads;
+static uint32_t rpcping_threads;
 
 static struct timespec to = {30, 0};
 
@@ -123,9 +123,7 @@ worker_cb(struct clnt_req *cc)
 			 / (double) sysconf(_SC_CLK_TCK));
 
 	CLNT_DESTROY(clnt);
-	pthread_mutex_lock(&rpcpring_mutex);
-	(void)atomic_dec_uint32_t(&rpcpring_threads);
-	pthread_mutex_unlock(&rpcpring_mutex);
+	(void)atomic_dec_uint32_t(&rpcping_threads);
 	pthread_cond_broadcast(&rpcpring_cond);
 }
 
@@ -325,10 +323,10 @@ int main(int argc, char *argv[])
 		s->count = count;
 		s->proc = proc;
 		pthread_create(&t, NULL, worker, s);
-		(void)atomic_inc_uint32_t(&rpcpring_threads);
+		(void)atomic_inc_uint32_t(&rpcping_threads);
 	}
 
-	while (atomic_sub_uint32_t(&rpcpring_threads, 0)) {
+	while (atomic_fetch_uint32_t(&rpcping_threads)) {
 		pthread_cond_wait(&rpcpring_cond, &rpcpring_mutex);
 	}
 
