@@ -228,6 +228,7 @@ work_pool_thread(void *arg)
 
 	pool->n_threads--;
 	TAILQ_REMOVE(&pool->wptqh, wpt, wptq);
+	TAILQ_REMOVE(&pool->pqh.qh, &wpt->pqe, q);
 	pthread_mutex_unlock(&pool->pqh.qmutex);
 
 	__warnx(TIRPC_DEBUG_FLAG_WORKER,
