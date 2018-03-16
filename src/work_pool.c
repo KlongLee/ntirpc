@@ -228,6 +228,7 @@ work_pool_thread(void *arg)
 
 	pool->n_threads--;
 	TAILQ_REMOVE(&pool->wptqh, wpt, wptq);
+	TAILQ_REMOVE(&pool->pqh.qh, &wpt->pqe, q);
 	pthread_mutex_unlock(&pool->pqh.qmutex);
 
 	__warnx(TIRPC_DEBUG_FLAG_WORKER,
@@ -301,27 +302,27 @@ int
 work_pool_shutdown(struct work_pool *pool)
 {
 	struct work_pool_thread *wpt;
-	struct timespec ts = {
-		.tv_sec = 1,
-		.tv_nsec = 0,
-	};
+	pthread_t thread_id;
 
 	pool->params.thrd_max =
 	pool->params.thrd_min = 0;
 
+	pthread_mutex_lock(&pool->pqh.qmutex);
 	while (pool->n_threads > 0) {
 		__warnx(TIRPC_DEBUG_FLAG_WORKER,
 			"%s() \"%s\" %" PRIu32,
 			__func__, pool->name, pool->n_threads);
-		pthread_mutex_lock(&pool->pqh.qmutex);
 		wpt = TAILQ_FIRST(&pool->wptqh);
 		while (wpt) {
 			pthread_cond_signal(&wpt->pqcond);
+			thread_id = wpt->pt;
 			wpt = TAILQ_NEXT(wpt, wptq);
 		}
 		pthread_mutex_unlock(&pool->pqh.qmutex);
-		nanosleep(&ts, NULL);
+		pthread_join(thread_id, NULL);
+		pthread_mutex_lock(&pool->pqh.qmutex);
 	}
+	pthread_mutex_unlock(&pool->pqh.qmutex);
 
 	mem_free(pool->name, 0);
 	poolq_head_destroy(&pool->pqh);
