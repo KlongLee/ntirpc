@@ -129,7 +129,7 @@ typedef struct rpc_client {
  */
 struct clnt_req {
 	struct work_pool_entry cc_wpe;
-	struct opr_rbtree_node cc_dplx;
+	TAILQ_ENTRY(clnt_req) cc_xid_q;
 	struct opr_rbtree_node cc_rqst;
 	cond_t cc_cond;
 	mutex_t cc_mutex;

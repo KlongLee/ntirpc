@@ -398,24 +398,6 @@ clnt_tli_ncreate(int fd, const struct netconfig *nconf,
 	return (cl);
 }
 
-int
-clnt_req_xid_cmpf(const struct opr_rbtree_node *lhs,
-		  const struct opr_rbtree_node *rhs)
-{
-	struct clnt_req *lk, *rk;
-
-	lk = opr_containerof(lhs, struct clnt_req, cc_dplx);
-	rk = opr_containerof(rhs, struct clnt_req, cc_dplx);
-
-	if (lk->cc_xid < rk->cc_xid)
-		return (-1);
-
-	if (lk->cc_xid == rk->cc_xid)
-		return (0);
-
-	return (1);
-}
-
 enum clnt_stat
 clnt_req_callback(struct clnt_req *cc)
 {
@@ -440,22 +422,13 @@ clnt_req_refresh(struct clnt_req *cc)
 {
 	struct cx_data *cx = CX_DATA(cc->cc_clnt);
 	struct rpc_dplx_rec *rec = cx->cx_rec;
-	struct opr_rbtree_node *nv;
 
-	/* this lock protects both xid and rbtree */
+	/* this lock protects both xid and list */
 	rpc_dplx_rli(rec);
-	opr_rbtree_remove(&rec->call_replies, &cc->cc_dplx);
+	TAILQ_REMOVE(&rec->cc_xid_qh, cc, cc_xid_q);
 	cc->cc_xid = ++(rec->call_xid);
-	nv = opr_rbtree_insert(&rec->call_replies, &cc->cc_dplx);
+	TAILQ_INSERT_TAIL(&rec->cc_xid_qh, cc, cc_xid_q);
 	rpc_dplx_rui(rec);
-	if (nv) {
-		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s: %p fd %d insert failed xid %" PRIu32,
-			__func__, &rec->xprt, rec->xprt.xp_fd,
-			cc->cc_xid);
-		cc->cc_error.re_status = RPC_TLIERROR;
-		return (RPC_TLIERROR);
-	}
 
 	cc->cc_error.re_status = RPC_SUCCESS;
 	return (RPC_SUCCESS);
@@ -465,10 +438,10 @@ void
 clnt_req_reset(struct clnt_req *cc)
 {
 	struct cx_data *cx = CX_DATA(cc->cc_clnt);
+	struct rpc_dplx_rec *rec = cx->cx_rec;
 
-	rpc_dplx_rli(cx->cx_rec);
-	opr_rbtree_remove(&cx->cx_rec->call_replies, &cc->cc_dplx);
-	rpc_dplx_rui(cx->cx_rec);
+	rpc_dplx_rli(rec);
+	TAILQ_REMOVE(&rec->cc_xid_qh, cc, cc_xid_q);
 
 	if (atomic_postclear_uint16_t_bits(&cc->cc_flags,
 					   CLNT_REQ_FLAG_ACKSYNC |
@@ -477,6 +450,7 @@ clnt_req_reset(struct clnt_req *cc)
 		svc_rqst_expire_remove(cc);
 		cc->cc_expire_ms = 0;	/* atomic barrier(s) */
 	}
+	rpc_dplx_rui(rec);
 }
 
 enum clnt_stat
@@ -485,7 +459,6 @@ clnt_req_setup(struct clnt_req *cc, struct timespec timeout)
 	CLIENT *clnt = cc->cc_clnt;
 	struct cx_data *cx = CX_DATA(clnt);
 	struct rpc_dplx_rec *rec = cx->cx_rec;
-	struct opr_rbtree_node *nv;
 
 	cc->cc_error.re_errno = 0;
 	cc->cc_error.re_status = RPC_SUCCESS;
@@ -509,18 +482,11 @@ clnt_req_setup(struct clnt_req *cc, struct timespec timeout)
 			__func__, timeout.tv_sec);
 	}
 
-	/* this lock protects both xid and rbtree */
+	/* this lock protects both xid and list */
 	rpc_dplx_rli(rec);
 	cc->cc_xid = ++(rec->call_xid);
-	nv = opr_rbtree_insert(&rec->call_replies, &cc->cc_dplx);
+	TAILQ_INSERT_TAIL(&rec->cc_xid_qh, cc, cc_xid_q);
 	rpc_dplx_rui(rec);
-	if (nv) {
-		__warnx(TIRPC_DEBUG_FLAG_ERROR,
-			"%s: %p fd %d insert failed xid %" PRIu32,
-			__func__, &rec->xprt, rec->xprt.xp_fd, cc->cc_xid);
-		cc->cc_error.re_status = RPC_TLIERROR;
-		return (RPC_TLIERROR);
-	}
 
 	CLNT_REF(clnt, CLNT_REF_FLAG_NONE);
 	return (RPC_SUCCESS);
@@ -534,21 +500,21 @@ clnt_req_process_reply(SVCXPRT *xprt, struct svc_req *req)
 {
 	XDR *xdrs = req->rq_xdrs;
 	struct rpc_dplx_rec *rec = REC_XPRT(xprt);
-	struct opr_rbtree_node *nv;
 	struct clnt_req *cc;
-	struct clnt_req cc_k;
 
 	rpc_dplx_rli(rec);
-	cc_k.cc_xid = req->rq_msg.rm_xid;
-	nv = opr_rbtree_lookup(&rec->call_replies, &cc_k.cc_dplx);
-	rpc_dplx_rui(rec);
-	if (!nv) {
+	cc = TAILQ_FIRST(&rec->cc_xid_qh);
+	while (cc && cc->cc_xid != req->rq_msg.rm_xid) {
+		cc = TAILQ_NEXT(cc, cc_xid_q);
+	}
+	if (!cc) {
+		rpc_dplx_rui(rec);
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s: %p fd %d lookup failed xid %" PRIu32,
-			__func__, &rec->xprt, rec->xprt.xp_fd, cc_k.cc_xid);
+			__func__, &rec->xprt, rec->xprt.xp_fd,
+			req->rq_msg.rm_xid);
 		return SVC_STAT(xprt);
 	}
-	cc = opr_containerof(nv, struct clnt_req, cc_dplx);
 
 	/* order dependent */
 	if (atomic_postclear_uint16_t_bits(&cc->cc_flags,
@@ -557,6 +523,7 @@ clnt_req_process_reply(SVCXPRT *xprt, struct svc_req *req)
 		svc_rqst_expire_remove(cc);
 		cc->cc_expire_ms = 0;	/* atomic barrier(s) */
 	}
+	rpc_dplx_rui(rec);
 
 	if (atomic_postset_uint16_t_bits(&cc->cc_flags, CLNT_REQ_FLAG_ACKSYNC)
 	    & (CLNT_REQ_FLAG_ACKSYNC | CLNT_REQ_FLAG_BACKSYNC)) {

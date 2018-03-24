@@ -30,6 +30,7 @@
 #include <misc/queue.h>
 #include <misc/rbtree.h>
 #include <misc/wait_queue.h>
+#include <rpc/clnt.h>
 #include <rpc/svc.h>
 #include <rpc/xdr_ioq.h>
 
@@ -51,7 +52,11 @@ typedef struct rpc_dplx_lock {
 struct rpc_dplx_rec {
 	struct svc_xprt xprt;		/**< Transport Independent handle */
 	struct xdr_ioq ioq;
-	struct opr_rbtree call_replies;
+	/*
+	 * Add new entries at tail.
+	 * Older entry search match will be nearest the head.
+	 */
+	TAILQ_HEAD(cc_xid_head_s, clnt_req) cc_xid_qh;
 	struct opr_rbtree_node fd_node;
 	struct {
 		rpc_dplx_lock_t lock;
@@ -93,8 +98,6 @@ extern size_t strlcpy(char *, const char *src, size_t);
 
 /* in clnt_generic.c */
 enum xprt_stat clnt_req_process_reply(SVCXPRT *, struct svc_req *);
-int clnt_req_xid_cmpf(const struct opr_rbtree_node *lhs,
-		      const struct opr_rbtree_node *rhs);
 
 static inline void
 rpc_dplx_lock_init(struct rpc_dplx_lock *lock)
@@ -113,8 +116,8 @@ rpc_dplx_lock_destroy(struct rpc_dplx_lock *lock)
 static inline void
 rpc_dplx_rec_init(struct rpc_dplx_rec *rec)
 {
+	TAILQ_INIT(&rec->cc_xid_qh);
 	rpc_dplx_lock_init(&rec->recv.lock);
-	opr_rbtree_init(&rec->call_replies, clnt_req_xid_cmpf);
 	mutex_init(&rec->xprt.xp_lock, NULL);
 
 	rec->xprt.xp_refs = 1;
