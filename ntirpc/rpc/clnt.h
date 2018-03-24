@@ -49,7 +49,6 @@
 #define _TIRPC_CLNT_H_
 
 #include <misc/rbtree.h>
-#include <misc/wait_queue.h>
 #include <rpc/svc.h>
 #include <rpc/rpc_err.h>
 #include <rpc/clnt_stat.h>
@@ -132,7 +131,8 @@ struct clnt_req {
 	struct work_pool_entry cc_wpe;
 	struct opr_rbtree_node cc_dplx;
 	struct opr_rbtree_node cc_rqst;
-	struct waitq_entry cc_we;
+	cond_t cc_cond;
+	mutex_t cc_mutex;
 	struct opaque_auth cc_verf;
 
 	AUTH *cc_auth;
@@ -564,16 +564,16 @@ static inline void clnt_req_fill(struct clnt_req *cc, struct rpc_client *clnt,
 	cc->cc_refs = 1;
 
 	/* protects this */
-	pthread_mutex_init(&cc->cc_we.mtx, NULL);
-	pthread_mutex_lock(&cc->cc_we.mtx);
-	pthread_cond_init(&cc->cc_we.cv, 0);
+	pthread_mutex_init(&cc->cc_mutex, NULL);
+	pthread_mutex_lock(&cc->cc_mutex);
+	pthread_cond_init(&cc->cc_cond, 0);
 }
 
 static inline void clnt_req_fini(struct clnt_req *cc)
 {
-	pthread_cond_destroy(&cc->cc_we.cv);
-	pthread_mutex_unlock(&cc->cc_we.mtx);
-	pthread_mutex_destroy(&cc->cc_we.mtx);
+	pthread_cond_destroy(&cc->cc_cond);
+	pthread_mutex_unlock(&cc->cc_mutex);
+	pthread_mutex_destroy(&cc->cc_mutex);
 	CLNT_RELEASE(cc->cc_clnt, CLNT_RELEASE_FLAG_NONE);
 }
 

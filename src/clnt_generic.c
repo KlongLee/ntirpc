@@ -424,15 +424,15 @@ clnt_req_callback(struct clnt_req *cc)
 	return CLNT_CALL_ONCE(cc);
 }
 
-/*
- * waitq_entry is locked in clnt_req_setup()
- */
 void
 clnt_req_callback_default(struct clnt_req *cc)
 {
-	mutex_lock(&cc->cc_we.mtx);
-	cond_signal(&cc->cc_we.cv);
-	mutex_unlock(&cc->cc_we.mtx);
+	/* cc_mutex is initially locked in clnt_req_fill()
+	 * and unlocked only by clnt_req_wait_reply()
+	 */
+	mutex_lock(&cc->cc_mutex);
+	cond_signal(&cc->cc_cond);
+	mutex_unlock(&cc->cc_mutex);
 }
 
 enum clnt_stat
@@ -617,7 +617,9 @@ clnt_req_wait_reply(struct clnt_req *cc)
 
 	(void)clock_gettime(CLOCK_REALTIME_FAST, &ts);
 	timespecadd(&ts, &cc->cc_timeout);
-	code = cond_timedwait(&cc->cc_we.cv, &cc->cc_we.mtx, &ts);
+	/* cc_mutex is initially locked in clnt_req_fill()
+	 */
+	code = cond_timedwait(&cc->cc_cond, &cc->cc_mutex, &ts);
 
 	__warnx(TIRPC_DEBUG_FLAG_CLNT_REQ,
 		"%s: %p fd %d replied xid %" PRIu32,
