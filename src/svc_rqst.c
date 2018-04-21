@@ -81,8 +81,6 @@ struct svc_rqst_rec {
 
 	int sv[2];
 	uint32_t id_k;		/* chan id */
-	uint32_t refcnt;
-	uint16_t flags;
 
 	/*
 	 * union of event processor types
@@ -101,6 +99,9 @@ struct svc_rqst_rec {
 			fd_set set;	/* select/fd_set (currently unhooked) */
 		} fd;
 	} ev_u;
+
+	int32_t ev_refs;
+	uint16_t ev_flags;
 };
 
 struct svc_rqst_set {
@@ -184,11 +185,11 @@ svc_rqst_lookup_chan(uint32_t chan_id)
 		return (NULL);
 
 	sr_rec = &svc_rqst_set.srr[chan_id];
-	if (!sr_rec->refcnt)
+	if (atomic_fetch_int32_t(&sr_rec->ev_refs) <= 0)
 		return (NULL);
 
-	atomic_inc_uint32_t(&sr_rec->refcnt);
-
+	/* do not pre-increment to avoid accidental new channel */
+	atomic_inc_int32_t(&sr_rec->ev_refs);
 	return (sr_rec);
 }
 
@@ -295,7 +296,7 @@ svc_rqst_new_evchan(uint32_t *chan_id /* OUT */, void *u_data, uint32_t flags)
 	n_id = --(svc_rqst_set.next_id);
 	sr_rec = &svc_rqst_set.srr[n_id];
 
-	if (sr_rec->refcnt) {
+	if (atomic_postinc_int32_t(&sr_rec->ev_refs) > 0) {
 		/* already exists */
 		*chan_id = n_id;
 		mutex_unlock(&svc_rqst_set.mtx);
@@ -371,13 +372,12 @@ svc_rqst_new_evchan(uint32_t *chan_id /* OUT */, void *u_data, uint32_t flags)
 
 	*chan_id =
 	sr_rec->id_k = n_id;
-	sr_rec->refcnt = 1;	/* svc_rqst_set ref */
-	sr_rec->flags = flags & SVC_RQST_FLAG_MASK;
+	sr_rec->ev_flags = flags & SVC_RQST_FLAG_MASK;
 	opr_rbtree_init(&sr_rec->call_expires, svc_rqst_expire_cmpf);
 	mutex_init(&sr_rec->ev_lock, NULL);
 
 	if (!code) {
-		sr_rec->refcnt = 2;
+		atomic_inc_int32_t(&sr_rec->ev_refs);
 		sr_rec->ev_wpe.fun = svc_rqst_run_task;
 		sr_rec->ev_wpe.arg = u_data;
 		work_pool_submit(&svc_work_pool, &sr_rec->ev_wpe);
@@ -394,7 +394,7 @@ svc_rqst_new_evchan(uint32_t *chan_id /* OUT */, void *u_data, uint32_t flags)
 static inline void
 svc_rqst_release(struct svc_rqst_rec *sr_rec)
 {
-	if (atomic_dec_uint32_t(&sr_rec->refcnt))
+	if (atomic_dec_int32_t(&sr_rec->ev_refs) > 0)
 		return;
 
 	__warnx(TIRPC_DEBUG_FLAG_SVC_RQST,
@@ -425,23 +425,23 @@ svc_rqst_unhook_events(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
 		if (code) {
 			code = errno;
 			__warnx(TIRPC_DEBUG_FLAG_WARN,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) unhook failed (%d)",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1], code);
 		} else {
 			__warnx(TIRPC_DEBUG_FLAG_SVC_RQST |
 				TIRPC_DEBUG_FLAG_REFCNT,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) unhook",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1]);
 		}
@@ -471,7 +471,7 @@ svc_rqst_rearm_events(SVCXPRT *xprt)
 		return (0);
 
 	/* MUST follow the destroyed check above */
-	if (sr_rec->flags & SVC_RQST_FLAG_SHUTDOWN)
+	if (sr_rec->ev_flags & SVC_RQST_FLAG_SHUTDOWN)
 		return (0);
 
 	rpc_dplx_rli(rec);
@@ -496,23 +496,23 @@ svc_rqst_rearm_events(SVCXPRT *xprt)
 			atomic_clear_uint16_t_bits(&xprt->xp_flags,
 						   SVC_XPRT_FLAG_ADDED);
 			__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) rearm failed (%d)",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1], code);
 		} else {
 			__warnx(TIRPC_DEBUG_FLAG_SVC_RQST |
 				TIRPC_DEBUG_FLAG_REFCNT,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) rearm",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1]);
 		}
@@ -558,23 +558,23 @@ svc_rqst_hook_events(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
 			atomic_clear_uint16_t_bits(&rec->xprt.xp_flags,
 						   SVC_XPRT_FLAG_ADDED);
 			__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) hook failed (%d)",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1], code);
 		} else {
 			__warnx(TIRPC_DEBUG_FLAG_SVC_RQST |
 				TIRPC_DEBUG_FLAG_REFCNT,
-				"%s: %p fd %d xp_refs %" PRIu32
-				" sr_rec %p evchan %d refcnt %" PRIu32
+				"%s: %p fd %d xp_refs %" PRId32
+				" sr_rec %p evchan %d ev_refs %" PRId32
 				" epoll_fd %d control fd pair (%d:%d) hook",
 				__func__, rec, rec->xprt.xp_fd,
 				rec->xprt.xp_refs,
-				sr_rec, sr_rec->id_k, sr_rec->refcnt,
+				sr_rec, sr_rec->id_k, sr_rec->ev_refs,
 				sr_rec->ev_u.epoll.epoll_fd,
 				sr_rec->sv[0], sr_rec->sv[1]);
 		}
@@ -700,7 +700,7 @@ svc_rqst_xprt_register(SVCXPRT *newxprt, SVCXPRT *xprt)
 					   SVC_RQST_FLAG_CHAN_AFFINITY);
 
 	/* if round robin policy, begin with global/legacy event channel */
-	if (!(sr_rec->flags & SVC_RQST_FLAG_CHAN_AFFINITY)) {
+	if (!(sr_rec->ev_flags & SVC_RQST_FLAG_CHAN_AFFINITY)) {
 		int code = svc_rqst_evchan_reg(round_robin, newxprt,
 					       SVC_RQST_FLAG_NONE);
 
@@ -754,6 +754,7 @@ svc_rqst_xprt_task(struct work_pool_entry *wpe)
 
 	atomic_clear_uint16_t_bits(&rec->ioq.ioq_s.qflags, IOQ_FLAG_WORKING);
 
+	/* atomic barrier (above) should protect following values */
 	if (rec->xprt.xp_refs > 1
 	 && !(rec->xprt.xp_flags & SVC_XPRT_FLAG_DESTROYED)) {
 		/* (idempotent) xp_flags and xp_refs are set atomic.
@@ -871,7 +872,7 @@ svc_rqst_epoll_event(struct svc_rqst_rec *sr_rec, struct epoll_event *ev)
 
 	__warnx(TIRPC_DEBUG_FLAG_SVC_RQST |
 		TIRPC_DEBUG_FLAG_REFCNT,
-		"%s: %p fd %d xp_refs %" PRIu32
+		"%s: %p fd %d xp_refs %" PRId32
 		" event %d",
 		__func__, rec, rec->xprt.xp_fd, rec->xprt.xp_refs,
 		ev->events);
@@ -927,7 +928,7 @@ svc_rqst_epoll_events(struct svc_rqst_rec *sr_rec, int n_events)
 	}
 
 	/* submit another task to handle events in order */
-	atomic_inc_uint32_t(&sr_rec->refcnt);
+	atomic_inc_int32_t(&sr_rec->ev_refs);
 	work_pool_submit(&svc_work_pool, &sr_rec->ev_wpe);
 
 	/* in most cases have only one event, use this hot thread */
@@ -994,7 +995,7 @@ svc_rqst_epoll_loop(struct svc_rqst_rec *sr_rec)
 				      sr_rec->ev_u.epoll.max_events,
 				      timeout_ms);
 
-		if (unlikely(sr_rec->flags & SVC_RQST_FLAG_SHUTDOWN)) {
+		if (unlikely(sr_rec->ev_flags & SVC_RQST_FLAG_SHUTDOWN)) {
 			__warnx(TIRPC_DEBUG_FLAG_SVC_RQST,
 				"%s: epoll_fd %d epoll_wait shutdown (%d)",
 				__func__,
@@ -1066,7 +1067,7 @@ svc_rqst_run_task(struct work_pool_entry *wpe)
 		 *	+1	this work_pool thread
 		 * so, DROP one here so the final release will go to 0.
 		 */
-		atomic_dec_uint32_t(&sr_rec->refcnt);	/* svc_rqst_set */
+		atomic_dec_int32_t(&sr_rec->ev_refs);	/* svc_rqst_set */
 	}
 	svc_rqst_release(sr_rec);
 }
@@ -1103,7 +1104,7 @@ svc_rqst_delete_evchan(uint32_t chan_id)
 	if (!sr_rec) {
 		return (ENOENT);
 	}
-	atomic_set_uint16_t_bits(&sr_rec->flags, SVC_RQST_FLAG_SHUTDOWN);
+	atomic_set_uint16_t_bits(&sr_rec->ev_flags, SVC_RQST_FLAG_SHUTDOWN);
 	ev_sig(sr_rec->sv[0], SVC_RQST_FLAG_SHUTDOWN);
 
 	svc_rqst_release(sr_rec);

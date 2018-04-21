@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012 Linux Box Corporation.
- * Copyright (c) 2012-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2012-2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,7 @@ static inline void
 clnt_data_init(struct cx_data *cx)
 {
 	mutex_init(&cx->cx_c.cl_lock, NULL);
-	cx->cx_c.cl_refcnt = 1;
+	cx->cx_c.cl_refs = 1;
 }
 
 static inline void

@@ -430,11 +430,12 @@ svc_dg_destroy_task(struct work_pool_entry *wpe)
 {
 	struct rpc_dplx_rec *rec =
 			opr_containerof(wpe, struct rpc_dplx_rec, ioq.ioq_wpe);
+	SVCXPRT *xprt = &rec->xprt;
 	uint16_t xp_flags;
 
 	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
-		"%s() %p fd %d xp_refs %" PRIu32,
-		__func__, rec, rec->xprt.xp_fd, rec->xprt.xp_refs);
+		"%s() %p fd %d xp_refs %" PRId32,
+		__func__, xprt, xprt->xp_fd, xprt->xp_refs);
 
 	if (rec->xprt.xp_refs) {
 		/* instead of nanosleep */
@@ -478,8 +479,7 @@ svc_dg_destroy_it(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 	}
 
 	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
-		"%s() %p fd %d xp_refs %" PRIu32
-		" should actually destroy things @ %s:%d",
+		"%s() %p fd %d xp_refs %" PRId32 " @%s:%d",
 		__func__, xprt, xprt->xp_fd, xprt->xp_refs, tag, line);
 
 	while (atomic_postset_uint16_t_bits(&(REC_XPRT(xprt)->ioq.ioq_s.qflags),
