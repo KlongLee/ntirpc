@@ -217,7 +217,7 @@ struct svc_xprt {
 		/* optional checksum (after authentication/decryption) */
 		void (*xp_checksum) (struct svc_req *, void *, size_t);
 
-		/* actually destroy after xp_destroy_it and xp_release_it */
+		/* initiate destroy (after xp_destroy_it via xp_release_it) */
 		void (*xp_destroy) (SVCXPRT *, u_int, const char *, const int);
 
 		/* catch-all function */
@@ -225,6 +225,9 @@ struct svc_xprt {
 
 		/* free client user data */
 		svc_xprt_fun_t xp_free_user_data;
+
+		/* free synchronized with event loop */
+		svc_xprt_fun_t xp_free;
 	} *xp_ops;
 
 	/* handle incoming connections (per xp_fd) */
@@ -451,18 +454,12 @@ static inline void svc_destroy_it(SVCXPRT *xprt,
 	(*(xprt)->xp_ops->xp_control)((xprt), (rq), (in))
 
 /*
- * Service init (optional).
+ * Service init and shutdown (no longer optional).
  */
-
 __BEGIN_DECLS
 extern struct work_pool svc_work_pool;
 
 bool svc_init(struct svc_init_params *);
-__END_DECLS
-/*
- * Service shutdown (optional).
- */
-__BEGIN_DECLS
 int svc_shutdown(u_long flags);
 __END_DECLS
 /*

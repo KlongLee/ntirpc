@@ -131,7 +131,7 @@ typedef struct rpc_client {
 struct clnt_req {
 	struct work_pool_entry cc_wpe;
 	struct opr_rbtree_node cc_dplx;
-	struct opr_rbtree_node cc_rqst;
+	TAILQ_ENTRY(clnt_req) cc_expire_q;
 	struct waitq_entry cc_we;
 	struct opaque_auth cc_verf;
 
@@ -141,14 +141,14 @@ struct clnt_req {
 	struct xdrpair cc_reply;
 	void (*cc_process_cb)(struct clnt_req *);
 	clnt_req_freer cc_free_cb;
-	struct timespec cc_timeout;
 	struct rpc_err cc_error;
+	struct timespec cc_expire;
+	struct timespec cc_timeout;
 	size_t cc_size;
-	int cc_expire_ms;
 	int cc_refreshes;
 	rpcproc_t cc_proc;
 	uint32_t cc_xid;
-	uint32_t cc_refs;
+	int32_t cc_refs;
 	uint16_t cc_flags;
 };
 

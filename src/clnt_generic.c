@@ -419,8 +419,41 @@ clnt_req_xid_cmpf(const struct opr_rbtree_node *lhs,
 enum clnt_stat
 clnt_req_callback(struct clnt_req *cc)
 {
-	svc_rqst_expire_insert(cc);
+	struct cx_data *cx = CX_DATA(cc->cc_clnt);
+	struct rpc_dplx_rec *rec = cx->cx_rec;
+	struct clnt_req *nc;
+	bool earlier;
 
+	/* coarse nsec, not system time */
+	(void)clock_gettime(CLOCK_MONOTONIC_FAST, &cc->cc_expire);
+	timespecadd(&cc->cc_expire, &cc->cc_timeout);
+
+	rpc_dplx_rli(rec);
+	cc->cc_flags = CLNT_REQ_FLAG_EXPIRING;
+	nc = TAILQ_FIRST(&rec->cc_expire_qh);
+	while (nc) {
+		earlier = nc->cc_expire.tv_sec < cc->cc_expire.tv_sec
+		      || (nc->cc_expire.tv_sec == cc->cc_expire.tv_sec
+		       && nc->cc_expire.tv_nsec <= cc->cc_expire.tv_nsec);
+		if (earlier) {
+			TAILQ_INSERT_BEFORE(nc, cc, cc_expire_q);
+			break;
+		}
+		nc = TAILQ_NEXT(nc, cc_expire_q);
+	}
+	if (!nc) {
+		rec->ev_expire = cc->cc_expire;
+		TAILQ_INSERT_TAIL(&rec->cc_expire_qh, cc, cc_expire_q);
+	}
+	rpc_dplx_rui(rec);
+
+	/* Unlocking allows more callbacks to proceed during this
+	 * expiration registration (at the expense of a branch).
+	 * Avoids lock inversion.
+	 */
+	if (!nc) {
+		(void)svc_rqst_expiry_add(rec, cc->cc_expire);
+	}
 	return CLNT_CALL_ONCE(cc);
 }
 
@@ -465,18 +498,19 @@ void
 clnt_req_reset(struct clnt_req *cc)
 {
 	struct cx_data *cx = CX_DATA(cc->cc_clnt);
+	struct rpc_dplx_rec *rec = cx->cx_rec;
 
-	rpc_dplx_rli(cx->cx_rec);
-	opr_rbtree_remove(&cx->cx_rec->call_replies, &cc->cc_dplx);
-	rpc_dplx_rui(cx->cx_rec);
+	rpc_dplx_rli(rec);
+	cc->cc_flags = CLNT_REQ_FLAG_NONE;
+	cc->cc_refreshes = 2;
 
-	if (atomic_postclear_uint16_t_bits(&cc->cc_flags,
-					   CLNT_REQ_FLAG_ACKSYNC |
-					   CLNT_REQ_FLAG_EXPIRING)
-	    & CLNT_REQ_FLAG_EXPIRING) {
-		svc_rqst_expire_remove(cc);
-		cc->cc_expire_ms = 0;	/* atomic barrier(s) */
+	opr_rbtree_remove(&rec->call_replies, &cc->cc_dplx);
+
+	if (TAILQ_IS_ENQUEUED(cc, cc_expire_q)) {
+		/* cc_expire_q is only changed with RPC_DPLX_LOCKED */
+		TAILQ_REMOVE(&rec->cc_expire_qh, cc, cc_expire_q);
 	}
+	rpc_dplx_rui(rec);
 }
 
 enum clnt_stat
@@ -541,22 +575,20 @@ clnt_req_process_reply(SVCXPRT *xprt, struct svc_req *req)
 	rpc_dplx_rli(rec);
 	cc_k.cc_xid = req->rq_msg.rm_xid;
 	nv = opr_rbtree_lookup(&rec->call_replies, &cc_k.cc_dplx);
-	rpc_dplx_rui(rec);
 	if (!nv) {
+		rpc_dplx_rui(rec);
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s: %p fd %d lookup failed xid %" PRIu32,
-			__func__, &rec->xprt, rec->xprt.xp_fd, cc_k.cc_xid);
+			__func__, xprt, xprt->xp_fd, cc_k.cc_xid);
 		return SVC_STAT(xprt);
 	}
 	cc = opr_containerof(nv, struct clnt_req, cc_dplx);
 
-	/* order dependent */
-	if (atomic_postclear_uint16_t_bits(&cc->cc_flags,
-					   CLNT_REQ_FLAG_EXPIRING)
-	    & CLNT_REQ_FLAG_EXPIRING) {
-		svc_rqst_expire_remove(cc);
-		cc->cc_expire_ms = 0;	/* atomic barrier(s) */
+	if (TAILQ_IS_ENQUEUED(cc, cc_expire_q)) {
+		/* cc_expire_q is only changed with RPC_DPLX_LOCKED */
+		TAILQ_REMOVE(&rec->cc_expire_qh, cc, cc_expire_q);
 	}
+	rpc_dplx_rui(rec);
 
 	if (atomic_postset_uint16_t_bits(&cc->cc_flags, CLNT_REQ_FLAG_ACKSYNC)
 	    & (CLNT_REQ_FLAG_ACKSYNC | CLNT_REQ_FLAG_BACKSYNC)) {

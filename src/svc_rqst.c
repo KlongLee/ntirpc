@@ -76,7 +76,14 @@ static uint32_t round_robin;
 
 struct svc_rqst_rec {
 	struct work_pool_entry ev_wpe;
-	struct opr_rbtree call_expires;
+	/*
+	 * Add new entries at head, as each timeout is most likely farther
+	 * into the future. Shortest remaining timeout will be the tail.
+	 * Add destroyed entries at tail (with 0 timeout), where they will
+	 * close and free after the next currently scheduled timeout.
+	 * Most entries are *not* removed before timeout.
+	 */
+	TAILQ_HEAD(ev_expire_head_s, rpc_dplx_rec) ev_expire_qh;
 	mutex_t ev_lock;
 
 	int sv[2];
@@ -196,81 +203,18 @@ svc_rqst_lookup_chan(uint32_t chan_id)
 /* forward declaration in lieu of moving code {WAS} */
 static void svc_rqst_run_task(struct work_pool_entry *);
 
-static int
-svc_rqst_expire_cmpf(const struct opr_rbtree_node *lhs,
-		     const struct opr_rbtree_node *rhs)
-{
-	struct clnt_req *lk, *rk;
-
-	lk = opr_containerof(lhs, struct clnt_req, cc_rqst);
-	rk = opr_containerof(rhs, struct clnt_req, cc_rqst);
-
-	if (lk->cc_expire_ms < rk->cc_expire_ms)
-		return (-1);
-
-	if (lk->cc_expire_ms == rk->cc_expire_ms) {
-		return (0);
-	}
-
-	return (1);
-}
-
-static inline int
-svc_rqst_expire_ms(struct timespec *to)
-{
-	struct timespec ts;
-
-	/* coarse nsec, not system time */
-	(void)clock_gettime(CLOCK_MONOTONIC_FAST, &ts);
-	timespecadd(&ts, to);
-	return timespec_ms(&ts);
-}
-
-void
-svc_rqst_expire_insert(struct clnt_req *cc)
-{
-	struct cx_data *cx = CX_DATA(cc->cc_clnt);
-	struct svc_rqst_rec *sr_rec = (struct svc_rqst_rec *)cx->cx_rec->ev_p;
-	struct opr_rbtree_node *nv;
-
-	cc->cc_expire_ms = svc_rqst_expire_ms(&cc->cc_timeout);
-
-	mutex_lock(&sr_rec->ev_lock);
-	cc->cc_flags = CLNT_REQ_FLAG_EXPIRING;
- repeat:
-	nv = opr_rbtree_insert(&sr_rec->call_expires, &cc->cc_rqst);
-	if (nv) {
-		/* add this slightly later */
-		cc->cc_expire_ms++;
-		goto repeat;
-	}
-	mutex_unlock(&sr_rec->ev_lock);
-
-	ev_sig(sr_rec->sv[0], 0);	/* send wakeup */
-}
-
-void
-svc_rqst_expire_remove(struct clnt_req *cc)
-{
-	struct cx_data *cx = CX_DATA(cc->cc_clnt);
-	struct svc_rqst_rec *sr_rec = cx->cx_rec->ev_p;
-
-	mutex_lock(&sr_rec->ev_lock);
-	opr_rbtree_remove(&sr_rec->call_expires, &cc->cc_rqst);
-	mutex_unlock(&sr_rec->ev_lock);
-
-	ev_sig(sr_rec->sv[0], 0);	/* send wakeup */
-}
-
 static void
 svc_rqst_expire_task(struct work_pool_entry *wpe)
 {
 	struct clnt_req *cc = opr_containerof(wpe, struct clnt_req, cc_wpe);
 
-	if (!(atomic_postset_uint16_t_bits(&cc->cc_flags,
+	if (atomic_fetch_int32_t(&cc->cc_refs) > 1
+	 && !(atomic_postset_uint16_t_bits(&cc->cc_flags,
 					   CLNT_REQ_FLAG_BACKSYNC)
 	      & (CLNT_REQ_FLAG_ACKSYNC | CLNT_REQ_FLAG_BACKSYNC))) {
-		/* task switch takes time, response wasn't previously queued */
+		/* (idempotent) cc_flags and cc_refs are set atomic.
+		 * cc_refs need more than 1 (this task).
+		 */
 		cc->cc_error.re_status = RPC_TIMEDOUT;
 		(*cc->cc_process_cb)(cc);
 	}
@@ -373,7 +317,8 @@ svc_rqst_new_evchan(uint32_t *chan_id /* OUT */, void *u_data, uint32_t flags)
 	*chan_id =
 	sr_rec->id_k = n_id;
 	sr_rec->ev_flags = flags & SVC_RQST_FLAG_MASK;
-	opr_rbtree_init(&sr_rec->call_expires, svc_rqst_expire_cmpf);
+
+	TAILQ_INIT(&sr_rec->ev_expire_qh);
 	mutex_init(&sr_rec->ev_lock, NULL);
 
 	if (!code) {
@@ -596,7 +541,7 @@ svc_rqst_hook_events(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
  * RPC_DPLX_LOCKED
  */
 static void
-svc_rqst_unreg(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
+svc_rqst_clear(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
 {
 	uint16_t xp_flags = atomic_postclear_uint16_t_bits(&rec->xprt.xp_flags,
 							   SVC_XPRT_FLAG_ADDED);
@@ -604,12 +549,6 @@ svc_rqst_unreg(struct rpc_dplx_rec *rec, struct svc_rqst_rec *sr_rec)
 	/* clear events */
 	if (xp_flags & SVC_XPRT_FLAG_ADDED)
 		(void)svc_rqst_unhook_events(rec, sr_rec);
-
-	/* Unlinking after debug message ensures both the xprt and the sr_rec
-	 * are still present, as the xprt unregisters before release.
-	 */
-	rec->ev_p = NULL;
-	svc_rqst_release(sr_rec);
 }
 
 /*
@@ -659,7 +598,8 @@ svc_rqst_evchan_reg(uint32_t chan_id, SVCXPRT *xprt, uint32_t flags)
 				__func__, xprt, chan_id);
 			return (0);
 		}
-		svc_rqst_unreg(rec, ev_p);
+		svc_rqst_clear(rec, ev_p);
+		svc_rqst_release(ev_p);
 	}
 
 	/* assuming success */
@@ -743,7 +683,24 @@ svc_rqst_xprt_unregister(SVCXPRT *xprt, uint32_t flags)
 		/* not currently registered */
 		return;
 	}
-	svc_rqst_unreg(rec, sr_rec);
+	svc_rqst_clear(rec, sr_rec);
+	rec->ev_p = NULL;
+
+	if (!(flags & SVC_RQST_LOCKED))
+		mutex_lock(&sr_rec->ev_lock);
+
+	if (TAILQ_IS_ENQUEUED(rec, ev_expire_q)) {
+		/* ev_expire_q is only changed with SVC_RQST_LOCKED */
+		TAILQ_REMOVE(&sr_rec->ev_expire_qh, rec, ev_expire_q);
+	}
+
+	/* Call xp_free on next timeout; see svc_rqst_expiry_ms() */
+	rec->ev_expire.tv_sec = 0;
+	rec->ev_expire.tv_nsec = 0;
+	TAILQ_INSERT_TAIL(&sr_rec->ev_expire_qh, rec, ev_expire_q);
+
+	if (!(flags & SVC_RQST_LOCKED))
+		mutex_unlock(&sr_rec->ev_lock);
 }
 
 /*static*/ void
@@ -833,6 +790,173 @@ svc_rqst_clean_idle(int timeout)
 	--active;
 	mutex_unlock(&active_mtx);
 	return;
+}
+
+/*
+ * SVC_RQST_LOCKED
+ */
+static bool
+svc_rqst_expiring_add(struct rpc_dplx_rec *rec, struct timespec expire,
+		      struct svc_rqst_rec *sr_rec)
+{
+	struct rpc_dplx_rec *nrec;
+	bool earlier;
+
+	nrec = TAILQ_FIRST(&sr_rec->ev_expire_qh);
+	while (nrec) {
+		/* Check against last known expiration,
+		 * though that may have been removed,
+		 * ensuring largest time closest to head.
+		 * Avoid lock inversion.
+		 */
+		rpc_dplx_rli(nrec);
+		earlier = nrec->ev_expire.tv_sec < expire.tv_sec
+		      || (nrec->ev_expire.tv_sec == expire.tv_sec
+		       && nrec->ev_expire.tv_nsec <= expire.tv_nsec);
+		rpc_dplx_rui(nrec);
+
+		if (earlier) {
+			TAILQ_INSERT_BEFORE(nrec, rec, ev_expire_q);
+			return (false);
+		}
+		nrec = TAILQ_NEXT(nrec, ev_expire_q);
+	}
+
+	TAILQ_INSERT_TAIL(&sr_rec->ev_expire_qh, rec, ev_expire_q);
+	return (true);
+}
+
+/*
+ * RPC_DPLX_LOCKED
+ */
+static inline int
+svc_rqst_expiring_ms(struct rpc_dplx_rec *rec, struct timespec *ts)
+{
+	struct clnt_req *cc;
+	long ns;
+	int ms = 0;
+	bool good = !(rec->xprt.xp_flags & SVC_XPRT_FLAG_DESTROYED);
+
+	while ((cc = TAILQ_LAST(&rec->cc_expire_qh, cc_expire_head_s))) {
+		if (good) {
+			ms = cc->cc_expire.tv_sec - ts->tv_sec;
+			ns = cc->cc_expire.tv_nsec - ts->tv_nsec;
+			if (ns < 0) {
+				ms -= 1;
+				ns += 1000000000;
+			}
+
+			/* Convert to coarse milliseconds with round up */
+			ms *= 1000;
+			ms += (ns + 999999) / 1000000;
+			if (ms > 0) {
+				rec->ev_expire = cc->cc_expire;
+				break;
+			}
+		}
+
+		if (TAILQ_IS_ENQUEUED(cc, cc_expire_q)) {
+			/* cc_expire_q is only changed with RPC_DPLX_LOCKED */
+			TAILQ_REMOVE(&rec->cc_expire_qh, cc, cc_expire_q);
+
+			if (atomic_inc_int32_t(&cc->cc_refs) > 1) {
+				cc->cc_wpe.fun = svc_rqst_expire_task;
+				cc->cc_wpe.arg = NULL;
+				work_pool_submit(&svc_work_pool, &cc->cc_wpe);
+			}
+		}
+	}
+
+	return (ms);
+}
+
+/*
+ * not locked
+ */
+bool
+svc_rqst_expiry_add(struct rpc_dplx_rec *rec, struct timespec expire)
+{
+	struct svc_rqst_rec *sr_rec = (struct svc_rqst_rec *)rec->ev_p;
+	bool earlier = false;
+
+	mutex_lock(&sr_rec->ev_lock);
+	if (TAILQ_IS_ENQUEUED(rec, ev_expire_q)) {
+		/* Check race with another timeout on same connection */
+		earlier = rec->ev_expire.tv_sec < expire.tv_sec
+		      || (rec->ev_expire.tv_sec == expire.tv_sec
+		       && rec->ev_expire.tv_nsec <= expire.tv_nsec);
+		if (earlier) {
+			/* lost race, leave unchanged */
+			mutex_unlock(&sr_rec->ev_lock);
+			return (false);
+		}
+		/* ev_expire_q is only changed with SVC_RQST_LOCKED */
+		TAILQ_REMOVE(&sr_rec->ev_expire_qh, rec, ev_expire_q);
+	}
+	if (svc_rqst_expiring_add(rec, expire, sr_rec)) {
+		/* currently the shortest timeout! */
+		ev_sig(sr_rec->sv[0], 0);	/* send wakeup */
+		earlier = true;
+	}
+	mutex_unlock(&sr_rec->ev_lock);
+
+	return (earlier);
+}
+
+/*
+ * not locked
+ */
+static int
+svc_rqst_expiry_ms(struct svc_rqst_rec *sr_rec)
+{
+	struct rpc_dplx_rec *rec;
+	struct timespec ts;
+	struct timespec expire;
+	int ms;
+	int timeout_ms = SVC_RQST_TIMEOUT_MS;
+
+	/* coarse nsec, not system time */
+	(void)clock_gettime(CLOCK_MONOTONIC_FAST, &ts);
+
+	/* There is a small window between removing the registration
+	 * (system call latency) and processing outstanding events.
+	 * To avoid conflicts, process transport events in this thread.
+	 * This list has both per transport callback timeouts and
+	 * transports ready to free.
+	 */
+	mutex_lock(&sr_rec->ev_lock);
+	while ((rec = TAILQ_LAST(&sr_rec->ev_expire_qh, ev_expire_head_s))) {
+		TAILQ_REMOVE(&sr_rec->ev_expire_qh, rec, ev_expire_q);
+
+		if (rec->xprt.xp_refs <= 0) {
+			/* this was the only remaining reference */
+			(*rec->xprt.xp_ops->xp_free)(&rec->xprt);
+			svc_rqst_release(sr_rec);
+			continue;
+		}
+
+		/* Avoid lock inversion. */
+		rpc_dplx_rli(rec);
+		ms = svc_rqst_expiring_ms(rec, &ts);
+		expire = rec->ev_expire;
+		rpc_dplx_rui(rec);
+
+		if (ms <= 0) {
+			/* everything already cleaned up */
+			continue;
+		}
+		if (timeout_ms > ms) {
+			/* reduce to minimum */
+			timeout_ms = ms;
+		}
+		if (svc_rqst_expiring_add(rec, expire, sr_rec)) {
+			/* was inserted at tail, do not repeat */
+			break;
+		}
+	}
+	mutex_unlock(&sr_rec->ev_lock);
+
+	return (timeout_ms);
 }
 
 #ifdef TIRPC_EPOLL
@@ -947,42 +1071,12 @@ svc_rqst_epoll_events(struct svc_rqst_rec *sr_rec, int n_events)
 static inline bool
 svc_rqst_epoll_loop(struct svc_rqst_rec *sr_rec)
 {
-	struct clnt_req *cc;
-	struct opr_rbtree_node *n;
-	struct timespec ts;
 	int timeout_ms;
-	int expire_ms;
 	int n_events;
 
 	for (;;) {
-		timeout_ms = SVC_RQST_TIMEOUT_MS;
-
-		/* coarse nsec, not system time */
-		(void)clock_gettime(CLOCK_MONOTONIC_FAST, &ts);
-		expire_ms = timespec_ms(&ts);
-
 		/* before epoll_wait will accumulate events during scan */
-		mutex_lock(&sr_rec->ev_lock);
-		while ((n = opr_rbtree_first(&sr_rec->call_expires))) {
-			cc = opr_containerof(n, struct clnt_req, cc_rqst);
-
-			if (cc->cc_expire_ms > expire_ms) {
-				timeout_ms = cc->cc_expire_ms - expire_ms;
-				break;
-			}
-
-			/* order dependent */
-			atomic_clear_uint16_t_bits(&cc->cc_flags,
-						   CLNT_REQ_FLAG_EXPIRING);
-			opr_rbtree_remove(&sr_rec->call_expires, &cc->cc_rqst);
-			cc->cc_expire_ms = 0;	/* atomic barrier(s) */
-
-			atomic_inc_uint32_t(&cc->cc_refs);
-			cc->cc_wpe.fun = svc_rqst_expire_task;
-			cc->cc_wpe.arg = NULL;
-			work_pool_submit(&svc_work_pool, &cc->cc_wpe);
-		}
-		mutex_unlock(&sr_rec->ev_lock);
+		timeout_ms = svc_rqst_expiry_ms(sr_rec);
 
 		__warnx(TIRPC_DEBUG_FLAG_SVC_RQST,
 			"%s: epoll_fd %d before epoll_wait (%d)",
@@ -1001,6 +1095,11 @@ svc_rqst_epoll_loop(struct svc_rqst_rec *sr_rec)
 				__func__,
 				sr_rec->ev_u.epoll.epoll_fd,
 				n_events);
+
+			/* all SVCXPRT have had SVC_DESTROY,
+			 * see svc_shutdown() and svc_xprt_shutdown().
+			 */
+			(void)svc_rqst_expiry_ms(sr_rec);
 			return true;
 		}
 		if (n_events > 0) {
