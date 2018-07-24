@@ -1,7 +1,7 @@
 
 /*
  * Copyright (c) 2009, Sun Microsystems, Inc.
- * Copyright (c) 2012-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2012-2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -199,7 +199,7 @@ svc_dg_ncreatef(const int fd, const u_int sendsz, const u_int recvsz,
 	     && !(flags & SVC_CREATE_FLAG_XPRT_NOREG))
 	    || (flags & SVC_CREATE_FLAG_XPRT_DOREG))
 		svc_rqst_evchan_reg(__svc_params->ev_u.evchan.id, xprt,
-				    SVC_RQST_FLAG_LOCKED |
+				    RPC_DPLX_LOCKED |
 				    SVC_RQST_FLAG_CHAN_AFFINITY);
 
 	/* release */
@@ -425,77 +425,56 @@ svc_dg_reply(struct svc_req *req)
 	return (XPRT_IDLE);
 }
 
-static void
-svc_dg_destroy_task(struct work_pool_entry *wpe)
+static enum xprt_stat
+svc_dg_free(SVCXPRT *xprt)
 {
-	struct rpc_dplx_rec *rec =
-			opr_containerof(wpe, struct rpc_dplx_rec, ioq.ioq_wpe);
 	uint16_t xp_flags;
 
 	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
-		"%s() %p fd %d xp_refs %" PRIu32,
-		__func__, rec, rec->xprt.xp_fd, rec->xprt.xp_refs);
+		"%s() %p fd %d xp_refs %" PRId32,
+		__func__, xprt, xprt->xp_fd, xprt->xp_refs);
 
-	if (rec->xprt.xp_refs) {
-		/* instead of nanosleep */
-		work_pool_submit(&svc_work_pool, &(rec->ioq.ioq_wpe));
-		return;
-	}
-
-	xp_flags = atomic_postclear_uint16_t_bits(&rec->xprt.xp_flags,
+	xp_flags = atomic_postclear_uint16_t_bits(&xprt->xp_flags,
 						  SVC_XPRT_FLAG_CLOSE);
 	if ((xp_flags & SVC_XPRT_FLAG_CLOSE)
-	    && rec->xprt.xp_fd != RPC_ANYFD) {
-		(void)close(rec->xprt.xp_fd);
-		rec->xprt.xp_fd = RPC_ANYFD;
+	    && xprt->xp_fd != RPC_ANYFD) {
+		(void)close(xprt->xp_fd);
+		xprt->xp_fd = RPC_ANYFD;
 	}
 
-	if (rec->xprt.xp_ops->xp_free_user_data)
-		rec->xprt.xp_ops->xp_free_user_data(&rec->xprt);
+	if (xprt->xp_ops->xp_free_user_data)
+		xprt->xp_ops->xp_free_user_data(xprt);
 
-	if (rec->xprt.xp_tp)
-		mem_free(rec->xprt.xp_tp, 0);
-	if (rec->xprt.xp_netid)
-		mem_free(rec->xprt.xp_netid, 0);
+	if (xprt->xp_tp)
+		mem_free(xprt->xp_tp, 0);
+	if (xprt->xp_netid)
+		mem_free(xprt->xp_netid, 0);
 
-	if (rec->xprt.xp_parent)
-		SVC_RELEASE(rec->xprt.xp_parent, SVC_RELEASE_FLAG_NONE);
+	if (xprt->xp_parent)
+		SVC_RELEASE(xprt->xp_parent, SVC_RELEASE_FLAG_NONE);
 
-	svc_dg_xprt_free(DG_DR(rec));
+	svc_dg_xprt_free(DG_DR(REC_XPRT(xprt)));
+	return (XPRT_DESTROYED);
 }
 
 static void
 svc_dg_destroy_it(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 {
-	struct timespec ts = {
-		.tv_sec = 0,
-		.tv_nsec = 0,
-	};
-
-	if (!xprt->xp_parent) {
-		/* only original parent is registered */
-		svc_rqst_xprt_unregister(xprt);
-	}
+	svc_rqst_xprt_unregister(xprt, flags);
 
 	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
-		"%s() %p fd %d xp_refs %" PRIu32
-		" should actually destroy things @ %s:%d",
+		"%s() %p fd %d xp_refs %" PRId32 " @%s:%d",
 		__func__, xprt, xprt->xp_fd, xprt->xp_refs, tag, line);
-
-	while (atomic_postset_uint16_t_bits(&(REC_XPRT(xprt)->ioq.ioq_s.qflags),
-					    IOQ_FLAG_WORKING)
-	       & IOQ_FLAG_WORKING) {
-		nanosleep(&ts, NULL);
-	}
-
-	REC_XPRT(xprt)->ioq.ioq_wpe.fun = svc_dg_destroy_task;
-	work_pool_submit(&svc_work_pool, &(REC_XPRT(xprt)->ioq.ioq_wpe));
 }
 
 static void
 svc_dg_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 {
-	svc_dg_destroy_it(xprt, flags, tag, line);
+	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
+		"%s() %p fd %d xp_refs %" PRId32 " @%s:%d",
+		__func__, xprt, xprt->xp_fd, xprt->xp_refs, tag, line);
+
+	(void)svc_dg_free(xprt);
 }
 
 extern mutex_t ops_lock;
@@ -547,6 +526,7 @@ svc_dg_override_ops(SVCXPRT *xprt, SVCXPRT *rendezvous)
 		ops.xp_destroy = svc_dg_destroy;
 		ops.xp_control = svc_dg_control;
 		ops.xp_free_user_data = NULL;	/* no default */
+		ops.xp_free = (svc_xprt_fun_t)abort;
 	}
 	svc_override_ops(&ops, rendezvous);
 	xprt->xp_ops = &ops;
@@ -571,6 +551,7 @@ svc_dg_rendezvous_ops(SVCXPRT *xprt)
 		ops.xp_destroy = svc_dg_destroy_it;
 		ops.xp_control = svc_dg_control;
 		ops.xp_free_user_data = NULL;	/* no default */
+		ops.xp_free = svc_dg_free;
 	}
 	xprt->xp_ops = &ops;
 	mutex_unlock(&ops_lock);

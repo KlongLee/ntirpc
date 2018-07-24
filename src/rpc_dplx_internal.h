@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012 Linux Box Corporation.
- * Copyright (c) 2012-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2012-2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -51,6 +51,13 @@ typedef struct rpc_dplx_lock {
 struct rpc_dplx_rec {
 	struct svc_xprt xprt;		/**< Transport Independent handle */
 	struct xdr_ioq ioq;
+	/*
+	 * Add new entries at head, as each timeout is most likely farther
+	 * into the future. Shortest remaining timeout will be the tail.
+	 * Most entries are removed before timeout.
+	 */
+	TAILQ_HEAD(cc_expire_head_s, clnt_req) cc_expire_qh;
+	TAILQ_ENTRY(rpc_dplx_rec) ev_expire_q;
 	struct opr_rbtree call_replies;
 	struct opr_rbtree_node fd_node;
 	struct {
@@ -70,6 +77,7 @@ struct rpc_dplx_rec {
 	} ev_u;
 	void *ev_p;			/* struct svc_rqst_rec (internal) */
 
+	struct timespec ev_expire;
 	size_t maxrec;
 	long pagesz;
 	u_int recvsz;
@@ -79,9 +87,9 @@ struct rpc_dplx_rec {
 };
 #define REC_XPRT(p) (opr_containerof((p), struct rpc_dplx_rec, xprt))
 
-#define RPC_DPLX_FLAG_NONE          0x0000
-#define RPC_DPLX_FLAG_LOCKED        0x0001
-#define RPC_DPLX_FLAG_UNLOCK        0x0002
+/* > SVC_XPRT_FLAG_LOCKED */
+#define RPC_DPLX_LOCKED		0x00100000
+#define RPC_DPLX_UNLOCK		0x00200000
 
 #ifndef HAVE_STRLCAT
 extern size_t strlcat(char *, const char *, size_t);
@@ -95,6 +103,9 @@ extern size_t strlcpy(char *, const char *src, size_t);
 enum xprt_stat clnt_req_process_reply(SVCXPRT *, struct svc_req *);
 int clnt_req_xid_cmpf(const struct opr_rbtree_node *lhs,
 		      const struct opr_rbtree_node *rhs);
+
+/* in svc_rqst.c */
+bool svc_rqst_expiry_add(struct rpc_dplx_rec *, struct timespec);
 
 static inline void
 rpc_dplx_lock_init(struct rpc_dplx_lock *lock)
@@ -113,6 +124,7 @@ rpc_dplx_lock_destroy(struct rpc_dplx_lock *lock)
 static inline void
 rpc_dplx_rec_init(struct rpc_dplx_rec *rec)
 {
+	TAILQ_INIT(&rec->cc_expire_qh);
 	rpc_dplx_lock_init(&rec->recv.lock);
 	opr_rbtree_init(&rec->call_replies, clnt_req_xid_cmpf);
 	mutex_init(&rec->xprt.xp_lock, NULL);

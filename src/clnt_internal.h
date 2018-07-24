@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2012 Linux Box Corporation.
- * Copyright (c) 2012-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2012-2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -46,7 +46,7 @@ static inline void
 clnt_data_init(struct cx_data *cx)
 {
 	mutex_init(&cx->cx_c.cl_lock, NULL);
-	cx->cx_c.cl_refcnt = 1;
+	cx->cx_c.cl_refs = 1;
 }
 
 static inline void
@@ -60,9 +60,5 @@ clnt_data_destroy(struct cx_data *cx)
 	if (cx->cx_c.cl_tp && cx->cx_c.cl_tp[0])
 		mem_free(cx->cx_c.cl_tp, strlen(cx->cx_c.cl_tp) + 1);
 }
-
-/* in svc_rqst.c */
-void svc_rqst_expire_insert(struct clnt_req *);
-void svc_rqst_expire_remove(struct clnt_req *);
 
 #endif				/* _CLNT_INTERNAL_H */

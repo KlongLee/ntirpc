@@ -2202,14 +2202,26 @@ rpc_rdma_connect(RDMAXPRT *xprt)
 				rpc_rdma_state.cm_epollfd);
 }
 
-static void
-rpc_rdma_destroy_it(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
+static enum xprt_stat
+rpc_rdma_free(SVCXPRT *xprt)
 {
 	if (xprt->xp_ops->xp_free_user_data) {
 		/* call free hook */
 		xprt->xp_ops->xp_free_user_data(xprt);
 	}
+
 	rpc_rdma_destroy(RDMA_DR(REC_XPRT(xprt)));
+	return (XPRT_DESTROYED);
+}
+
+static void
+rpc_rdma_destroy_it(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
+{
+	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
+		"%s() %p fd %d xp_refs %" PRId32 " @%s:%d",
+		__func__, xprt, xprt->xp_fd, xprt->xp_refs, tag, line);
+
+	(void)rpc_rdma_free(xprt);
 }
 
 extern mutex_t ops_lock;
@@ -2244,4 +2256,5 @@ static struct xp_ops rpc_rdma_ops = {
 	.xp_destroy = rpc_rdma_destroy_it,
 	.xp_control = rpc_rdma_control,
 	.xp_free_user_data = NULL,	/* no default */
+	.xp_free = rpc_rdma_free,
 };

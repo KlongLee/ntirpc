@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2009, Sun Microsystems, Inc.
- * Copyright (c) 2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -91,7 +91,7 @@ svc_raw_ncreate(void)
 	srp = svc_raw_private;
 	if (srp == NULL) {
 		srp = svc_raw_xprt_zalloc(UDPMSGSIZE);
-		srp->raw_dr.xprt.xp_fd = FD_SETSIZE;
+		srp->raw_dr.xprt.xp_fd = __svc_params->max_connections;
 		svc_raw_private = srp;
 	}
 	xprt = &srp->raw_dr.xprt;
@@ -215,6 +215,7 @@ svc_raw_ops(SVCXPRT *xprt)
 		ops.xp_destroy = svc_raw_destroy;
 		ops.xp_control = svc_raw_control;
 		ops.xp_free_user_data = NULL;	/* no default */
+		ops.xp_free = (svc_xprt_fun_t)abort;
 	}
 	xprt->xp_ops = &ops;
 	mutex_unlock(&ops_lock);

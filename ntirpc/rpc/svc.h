@@ -2,7 +2,7 @@
 
 /*
  * Copyright (c) 2009, Sun Microsystems, Inc.
- * Copyright (c) 2012-2017 Red Hat, Inc. and/or its affiliates.
+ * Copyright (c) 2012-2018 Red Hat, Inc. and/or its affiliates.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -217,7 +217,7 @@ struct svc_xprt {
 		/* optional checksum (after authentication/decryption) */
 		void (*xp_checksum) (struct svc_req *, void *, size_t);
 
-		/* actually destroy after xp_destroy_it and xp_release_it */
+		/* initiate destroy (after xp_destroy_it via xp_release_it) */
 		void (*xp_destroy) (SVCXPRT *, u_int, const char *, const int);
 
 		/* catch-all function */
@@ -225,6 +225,9 @@ struct svc_xprt {
 
 		/* free client user data */
 		svc_xprt_fun_t xp_free_user_data;
+
+		/* free synchronized with event loop */
+		svc_xprt_fun_t xp_free;
 	} *xp_ops;
 
 	/* handle incoming connections (per xp_fd) */
@@ -261,7 +264,7 @@ struct svc_xprt {
 	int xp_si_type;		/* si type */
 	int xp_type;		/* xprt type */
 
-	uint32_t xp_refs;	/* handle reference count */
+	int32_t xp_refs;	/* handle reference count */
 	uint16_t xp_flags;	/* flags */
 };
 
@@ -369,12 +372,12 @@ __END_DECLS
 	if (((req)->rq_xprt)->xp_ops->xp_checksum) \
 		(*((req)->rq_xprt)->xp_ops->xp_checksum)(req, what, length)
 
-/* Protect a SVCXPRT with a SVC_REF for each call or request.
+/* Protect a SVCXPRT with SVC_REF() for each call, request, or task thread.
  */
 static inline void svc_ref_it(SVCXPRT *xprt, u_int flags,
 			      const char *tag, const int line)
 {
-	atomic_inc_uint32_t(&xprt->xp_refs);
+	atomic_inc_int32_t(&xprt->xp_refs);
 
 	if (flags & SVC_REF_FLAG_LOCKED)  {
 		/* unlock before warning trace */
@@ -387,10 +390,14 @@ static inline void svc_ref_it(SVCXPRT *xprt, u_int flags,
 #define SVC_REF(xprt, flags)						\
 	svc_ref_it(xprt, flags, __func__, __LINE__)
 
+/* SVC_RELEASE() the SVC_REF().
+ * Idempotent SVC_XPRT_FLAG_DESTROYED (bit SVC_XPRT_FLAG_RELEASING)
+ * indicates that more references should not be taken.
+ */
 static inline void svc_release_it(SVCXPRT *xprt, u_int flags,
 				  const char *tag, const int line)
 {
-	uint32_t refs = atomic_dec_uint32_t(&xprt->xp_refs);
+	int32_t refs = atomic_dec_int32_t(&xprt->xp_refs);
 	uint16_t xp_flags;
 
 	if (flags & SVC_RELEASE_FLAG_LOCKED) {
@@ -421,8 +428,9 @@ static inline void svc_release_it(SVCXPRT *xprt, u_int flags,
 #define SVC_RELEASE(xprt, flags)					\
 	svc_release_it(xprt, flags, __func__, __LINE__)
 
-/* SVC_DESTROY is SVC_RELEASE with once-only semantics.  Also, idempotent
- * SVC_XPRT_FLAG_DESTROYED indicates that more references should not be taken.
+/* SVC_DESTROY() is SVC_RELEASE() with once-only semantics.
+ * Idempotent SVC_XPRT_FLAG_DESTROYED (bit SVC_XPRT_FLAG_DESTROYING)
+ * indicates that more references should not be taken.
  */
 static inline void svc_destroy_it(SVCXPRT *xprt,
 				  const char *tag, const int line)
@@ -446,18 +454,12 @@ static inline void svc_destroy_it(SVCXPRT *xprt,
 	(*(xprt)->xp_ops->xp_control)((xprt), (rq), (in))
 
 /*
- * Service init (optional).
+ * Service init and shutdown (no longer optional).
  */
-
 __BEGIN_DECLS
 extern struct work_pool svc_work_pool;
 
 bool svc_init(struct svc_init_params *);
-__END_DECLS
-/*
- * Service shutdown (optional).
- */
-__BEGIN_DECLS
 int svc_shutdown(u_long flags);
 __END_DECLS
 /*

@@ -220,15 +220,10 @@ svc_rdma_reply(struct svc_req *req)
 	return (XPRT_IDLE);
 }
 
-static void
-svc_rdma_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
+static enum xprt_stat
+svc_rdma_free(SVCXPRT *xprt)
 {
 	RDMAXPRT *xd = RDMA_DR(REC_XPRT(xprt));
-
-	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
-		"%s() %p xp_refs %" PRId32
-		" should actually destroy things @ %s:%d",
-		__func__, xprt, xprt->xp_refs, tag, line);
 
 	xdr_rdma_destroy(xd);
 
@@ -236,9 +231,22 @@ svc_rdma_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
 		/* call free hook */
 		xprt->xp_ops->xp_free_user_data(xprt);
 	}
+
 	if (xprt->xp_parent)
 		SVC_RELEASE(xprt->xp_parent, SVC_RELEASE_FLAG_NONE);
+
 	rpc_rdma_destroy(xd);
+	return (XPRT_DESTROYED);
+}
+
+static void
+svc_rdma_destroy(SVCXPRT *xprt, u_int flags, const char *tag, const int line)
+{
+	__warnx(TIRPC_DEBUG_FLAG_REFCNT,
+		"%s() %p fd %d xp_refs %" PRId32 " @%s:%d",
+		__func__, xprt, xprt->xp_refs, tag, line);
+
+	(void)svc_rdma_free(xprt);
 }
 
 extern mutex_t ops_lock;
@@ -291,6 +299,7 @@ svc_rdma_ops(SVCXPRT *xprt)
 		ops.xp_destroy = svc_rdma_destroy,
 		ops.xp_control = svc_rdma_control;
 		ops.xp_free_user_data = NULL;	/* no default */
+		ops.xp_free = svc_rdma_free;
 	}
 	xprt->xp_ops = &ops;
 
