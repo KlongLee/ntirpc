@@ -775,16 +775,16 @@ svc_rqst_xprt_task(struct work_pool_entry *wpe)
  * Like __svc_clean_idle but event-type independent.  For now no cleanfds.
  */
 
-struct svc_rqst_clean_arg {
+struct svc_rqst_destroy_arg {
 	struct timespec ts;
 	int timeout;
-	int cleaned;
+	int destroyed;
 };
 
 static bool
-svc_rqst_clean_func(SVCXPRT *xprt, void *arg)
+svc_rqst_destroy_idle_func(SVCXPRT *xprt, void *arg)
 {
-	struct svc_rqst_clean_arg *acc = (struct svc_rqst_clean_arg *)arg;
+	struct svc_rqst_destroy_arg *acc = (struct svc_rqst_destroy_arg *)arg;
 
 	if (xprt->xp_ops == NULL)
 		return (false);
@@ -796,6 +796,32 @@ svc_rqst_clean_func(SVCXPRT *xprt, void *arg)
 		return (false);
 
 	SVC_DESTROY(xprt);
+	acc->destroyed++;
+	return (true);
+}
+
+struct svc_rqst_clean_arg {
+	int cleaned;
+};
+
+static bool
+svc_rqst_clean_destroyed_func(SVCXPRT *xprt, void *arg)
+{
+	struct svc_rqst_clean_arg *acc = (struct svc_rqst_clean_arg *)arg;
+
+	if (xprt->xp_ops == NULL)
+		return (false);
+
+	if (xprt->xp_flags & (SVC_XPRT_FLAG_RELEASING | SVC_XPRT_FLAG_UREG))
+		return (false);
+
+	if (!(xprt->xp_flags & SVC_XPRT_FLAG_DESTROYING))
+		return (false);
+
+	if (xprt->xp_refcnt != 1)
+		return (false);
+
+	SVC_RELEASE(xprt, SVC_RELEASE_FLAG_NONE);
 	acc->cleaned++;
 	return (true);
 }
@@ -803,9 +829,9 @@ svc_rqst_clean_func(SVCXPRT *xprt, void *arg)
 void authgss_ctx_gc_idle(void);
 
 static void
-svc_rqst_clean_idle(int timeout)
+svc_rqst_destroy_idle(int timeout)
 {
-	struct svc_rqst_clean_arg acc;
+	struct svc_rqst_destroy_arg acc;
 	static mutex_t active_mtx = MUTEX_INITIALIZER;
 	static uint32_t active;
 
@@ -828,9 +854,33 @@ svc_rqst_clean_idle(int timeout)
 	/* trim xprts (not sorted, not aggressive [but self limiting]) */
 	(void)clock_gettime(CLOCK_MONOTONIC_FAST, &acc.ts);
 	acc.timeout = timeout;
-	acc.cleaned = 0;
+	acc.destroyed = 0;
 
-	svc_xprt_foreach(svc_rqst_clean_func, (void *)&acc);
+	svc_xprt_foreach(svc_rqst_destroy_idle_func, (void *)&acc);
+
+ unlock:
+	--active;
+	mutex_unlock(&active_mtx);
+	return;
+}
+
+static void
+svc_rqst_clean_destroyed()
+{
+	static mutex_t active_mtx = MUTEX_INITIALIZER;
+	static uint32_t active;
+	struct svc_rqst_clean_arg acc;
+
+	if (mutex_trylock(&active_mtx) != 0)
+		return;
+
+	if (active > 0)
+		goto unlock;
+
+	++active;
+
+	acc.cleaned = 0;
+	svc_xprt_foreach(svc_rqst_clean_destroyed_func, (void *)&acc);
 
  unlock:
 	--active;
@@ -941,8 +991,9 @@ svc_rqst_epoll_events(struct svc_rqst_rec *sr_rec, int n_events)
 	/* failsafe idle processing after work task */
 	if (atomic_postclear_uint32_t_bits(&wakeups, ~SVC_RQST_WAKEUPS)
 	    > SVC_RQST_WAKEUPS) {
-		svc_rqst_clean_idle(__svc_params->idle_timeout);
+		svc_rqst_destroy_idle(__svc_params->idle_timeout);
 	}
+	svc_rqst_clean_destroyed();
 
 	return true;
 }
