@@ -210,6 +210,12 @@ clnt_vc_ncreatef(const int fd,	/* open file descriptor */
 	}
 	xd = VC_DR(REC_XPRT(xprt));
 
+	/*
+	 * Take extra ref for rpc client.
+	 */
+	SVC_REF(xprt, SVC_REF_FLAG_NONE);
+	clnt->cl_flags |= CLNT_FLAG_LOCAL;
+
 	if (!xd->sx_dr.ev_p) {
 		xprt->xp_dispatch.process_cb = clnt_vc_process;
 		svc_rqst_evchan_reg(__svc_params->ev_u.evchan.id, xprt,
@@ -460,10 +466,11 @@ clnt_vc_destroy(CLIENT *clnt)
 
 	if (cx->cx_rec) {
 		SVC_RELEASE(&cx->cx_rec->xprt, SVC_RELEASE_FLAG_NONE);
-	}
-	if (clnt->cl_flags & CLNT_FLAG_LOCAL) {
-		/* Local client; destroy the xprt */
-		SVC_DESTROY(&cx->cx_rec->xprt);
+		SVC_RELEASE(&cx->cx_rec->xprt, SVC_RELEASE_FLAG_NONE);
+		if (clnt->cl_flags & CLNT_FLAG_LOCAL) {
+			/* Local client; destroy the xprt */
+			SVC_DESTROY(&cx->cx_rec->xprt);
+		}
 	}
 
 	clnt_vc_data_free(CT_DATA(cx));
