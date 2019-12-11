@@ -101,7 +101,7 @@ union pktinfo_u {
 struct svc_dg_xprt {
 	struct rpc_dplx_rec su_dr;	/* SVCXPRT indexed by fd */
 	struct msghdr su_msghdr;	/* msghdr received from clnt */
-	unsigned char su_cmsg[SVC_CMSG_SIZE];	/* cmsghdr received from clnt */
+	union pktinfo_u su_cmsg[4];	/* cmsghdr received from clnt */
 };
 #define DG_DR(p) (opr_containerof((p), struct svc_dg_xprt, su_dr))
 #define su_data(xprt) (DG_DR(REC_XPRT(xprt)))
