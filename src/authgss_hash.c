@@ -103,6 +103,9 @@ authgss_hash_init()
 
 	mutex_lock(&authgss_hash_st.lock);
 
+	if (authgss_hash_st.initialized)
+		goto unlock;
+
 	code =
 	    rbtx_init(&authgss_hash_st.xt, svc_rpc_gss_cmpf,
 		      __svc_params->gss.ctx_hash_partitions,
@@ -130,6 +133,7 @@ authgss_hash_init()
 	    __svc_params->gss.max_ctx / authgss_hash_st.xt.npart;
 	authgss_hash_st.initialized = true;
 
+unlock:
 	mutex_unlock(&authgss_hash_st.lock);
 }
 
