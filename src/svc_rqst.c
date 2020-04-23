@@ -1309,6 +1309,8 @@ svc_rqst_clean_func(SVCXPRT *xprt, void *arg)
 		return (false);
 
 	SVC_DESTROY(xprt);
+	SVC_RELEASE(xprt, SVC_RELEASE_FLAG_NONE);
+	
 	acc->cleaned++;
 	return (true);
 }
