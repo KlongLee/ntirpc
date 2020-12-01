@@ -1219,6 +1219,15 @@ enum xprt_stat svc_request(SVCXPRT *xprt, XDR *xdrs)
 	return stat;
 }
 
+void svc_request_async(struct work_pool_entry *wpe)
+{
+	struct svc_request_params *wpe_arg = wpe->arg;
+
+	svc_request(wpe_arg->xprt, wpe_arg->xdrs);
+	mem_free(wpe->arg, sizeof(struct svc_request_params));
+	mem_free(wpe, sizeof(struct work_pool_entry));
+}
+
 static void svc_resume_task(struct work_pool_entry *wpe)
 {
 	struct svc_req *req =

@@ -115,6 +115,7 @@ typedef int32_t rpc_inline_t;
 #define TIRPC_SET_DEBUG_FLAGS		3
 #define TIRPC_GET_OTHER_FLAGS		4
 #define TIRPC_SET_OTHER_FLAGS		5
+#define TIRPC_SET_CONT_RECV		6
 
 /*
  * Debug flags support
@@ -182,6 +183,7 @@ typedef struct tirpc_pkg_params {
 	mem_2_size_t	aligned_;
 	mem_2_size_t	calloc_;
 	mem_p_size_t	realloc_;
+	uint32_t	cont_recv_limit;
 } tirpc_pkg_params;
 
 extern tirpc_pkg_params __ntirpc_pkg_params;

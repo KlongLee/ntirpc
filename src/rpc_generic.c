@@ -137,6 +137,7 @@ tirpc_pkg_params __ntirpc_pkg_params = {
 	tirpc_aligned,
 	tirpc_calloc,
 	tirpc_realloc,
+	64,
 };
 
 bool
@@ -160,6 +161,9 @@ tirpc_control(const u_int rq, void *in)
 		break;
 	case TIRPC_SET_OTHER_FLAGS:
 		__ntirpc_pkg_params.other_flags = *(int *)in;
+		break;
+	case TIRPC_SET_CONT_RECV:
+		__ntirpc_pkg_params.cont_recv_limit = *(uint32_t *)in;
 		break;
 	default:
 		return (false);

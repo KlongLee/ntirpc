@@ -37,6 +37,11 @@
 extern int __svc_maxiov;
 extern int __svc_maxrec;
 
+struct svc_request_params {
+	SVCXPRT *xprt;
+	XDR *xdrs;
+};
+
 /* threading fdsets around is annoying */
 struct svc_params {
 	mutex_t mtx;
@@ -77,6 +82,7 @@ struct svc_params {
 	int32_t idle_timeout;
 };
 
+void svc_request_async(struct work_pool_entry *wpe);
 enum xprt_stat svc_request(SVCXPRT *xprt, XDR *xdrs);
 
 extern struct svc_params __svc_params[1];
