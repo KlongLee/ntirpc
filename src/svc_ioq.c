@@ -353,7 +353,7 @@ void svc_ioq_write(SVCXPRT *xprt)
 				"%s: %p fd %d About to destroy - rc = %d",
 				__func__, xprt, xprt->xp_fd, rc);
 			SVC_DESTROY(xprt);
-			break;
+			/* Continue to clenaup all requests in queue */
 		} else if (rc == EWOULDBLOCK){
 			__warnx(TIRPC_DEBUG_FLAG_SVC_VC,
 				"%s: %p fd %d EWOULDBLOCK",
