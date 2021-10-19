@@ -74,7 +74,7 @@ rpc_sperror(const struct rpc_err *e, const char *s)
 		len -= i;
 	}
 
-	(void)strlcpy(str, clnt_sperrno(e->re_status), len);
+	(void)tirpc_strlcpy(str, clnt_sperrno(e->re_status), len);
 	i = strlen(str);
 	str += i;
 	len -= i;

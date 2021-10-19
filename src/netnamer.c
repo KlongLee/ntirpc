@@ -192,7 +192,7 @@ int netname2host(char netname[MAXNETNAMELEN + 1], char *hostname, int hostlen)
 	if (getnetid(netname, valbuf)) {
 		val = valbuf;
 		if ((*val == '0') && (val[1] == ':')) {
-			(void)strlcpy(hostname, val + 2, hostlen);
+			(void)tirpc_strlcpy(hostname, val + 2, hostlen);
 			return (1);
 		}
 	}

@@ -16,7 +16,6 @@
 
 
 #include "config.h"
-#ifndef HAVE_STRLCPY
 #include <sys/types.h>
 #include "strl.h"
 
@@ -26,7 +25,7 @@
  * Returns strlen(src); if retval >= siz, truncation occurred.
  */
 size_t
-strlcpy(char *dst, const char *src, size_t siz)
+tirpc_strlcpy(char *dst, const char *src, size_t siz)
 {
 	register char *d = dst;
 	register const char *s = src;
@@ -49,4 +48,3 @@ strlcpy(char *dst, const char *src, size_t siz)
 
 	return (s - src - 1);	/* count does not include NUL */
 }
-#endif

@@ -28,13 +28,6 @@
 
 #include "config.h"
 
-#ifndef HAVE_STRLCAT
-extern size_t strlcat(char *, const char *, size_t);
-#endif
-
-#ifndef HAVE_STRLCPY
-extern size_t strlcpy(char *, const char *src, size_t);
-#endif
-
+extern size_t tirpc_strlcpy(char *, const char *src, size_t);
 
 #endif /* STRL_H */
