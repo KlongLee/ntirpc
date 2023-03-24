@@ -644,12 +644,17 @@ svc_dg_enable_pktinfo(int fd, const struct __rpc_sockinfo *si)
 static int
 svc_dg_store_in_pktinfo(struct cmsghdr *cmsg, SVCXPRT *xprt)
 {
+	struct sockaddr_in *pkt_addr;
+	struct sockaddr_in *xprt_addr;
 	if (cmsg->cmsg_level == SOL_IP &&
 	    cmsg->cmsg_type == IP_PKTINFO &&
 	    cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo))) {
 		xprt->xp_pktinfo.in = *(struct in_pktinfo *) CMSG_DATA(cmsg);
-		xprt->xp_local.ss.ss_family = AF_INET;
-		xprt->xp_local.nb.buf = &xprt->xp_pktinfo;
+		pkt_addr = (struct sockaddr_in *)&xprt->xp_pktinfo;
+		xprt_addr = (struct sockaddr_in *)&xprt->xp_local.ss;
+		xprt_addr->sin_family = AF_INET;
+		xprt_addr->sin_addr.s_addr = pkt_addr->sin_addr.s_addr;
+		xprt->xp_local.nb.buf = xprt_addr;
 		xprt->xp_local.nb.len = sizeof(struct sockaddr_in);
 		return 1;
 	}
