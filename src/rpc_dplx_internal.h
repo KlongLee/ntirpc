@@ -78,6 +78,10 @@ struct rpc_dplx_rec {
 
 	size_t maxrec;
 	long pagesz;
+#ifdef USE_RPC_RDMA
+	u_int recvsz_hdr;
+	u_int sendsz_hdr;
+#endif
 	u_int recvsz;
 	u_int sendsz;
 	uint32_t call_xid;		/**< current call xid */

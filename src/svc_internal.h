@@ -82,6 +82,13 @@ struct svc_params {
 	u_long flags;
 	u_int max_connections;
 	int32_t idle_timeout;
+
+#ifdef USE_RPC_RDMA
+	uint32_t nfs_rdma_port;
+	bool enable_rdma_dump;
+	u_int max_rdma_connections;
+#endif
+
 };
 
 enum xprt_stat svc_request(SVCXPRT *xprt, XDR *xdrs);
