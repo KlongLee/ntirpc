@@ -193,15 +193,17 @@ xdrmem_putbufs(XDR *xdrs, xdr_uio *uio, u_int flags)
 			(unsigned long) XDR_GETPOS(xdrs));
 	}
 
-	if (!(--uio->uio_references)) {
-		if (uio->uio_release) {
-			uio->uio_release(uio, UIO_FLAG_NONE);
-		} else {
-			__warnx(TIRPC_DEBUG_FLAG_ERROR,
-				"%s() memory leak, unexpected or no release flags (%u)\n",
-				__func__, uio->uio_flags);
-			abort();
-		}
+    if (uio->uio_references == 0){
+        uio->uio_references = 1;
+    }
+
+	if (uio->uio_release) {
+		uio->uio_release(uio, UIO_FLAG_NONE);
+	} else {
+		__warnx(TIRPC_DEBUG_FLAG_ERROR,
+			"%s() memory leak, unexpected or no release flags (%u)\n",
+			__func__, uio->uio_flags);
+		abort();
 	}
 
 	return (TRUE);
