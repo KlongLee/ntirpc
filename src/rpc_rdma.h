@@ -282,9 +282,9 @@ struct rpc_rdma_state {
 
 	struct connection_requests c_r;		/* never freed??? */
 
-	pthread_t cm_thread;		/**< Thread id for connection manager */
-	pthread_t cq_thread;		/**< Thread id for completion queue */
-	pthread_t stats_thread;
+	pthread_t cm_thread_id;		/**< Thread id for connection manager */
+	pthread_t cq_thread_id;		/**< Thread id for completion queue */
+	pthread_t stats_thread_id;
 
 	int cm_epollfd;
 	int cq_epollfd;
