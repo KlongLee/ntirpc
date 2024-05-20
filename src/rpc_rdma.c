@@ -105,17 +105,17 @@ rpc_rdma_internals_init(void)
 static void
 rpc_rdma_internals_join(void)
 {
-	if (rpc_rdma_state.cm_thread) {
-		pthread_join(rpc_rdma_state.cm_thread, NULL);
-		rpc_rdma_state.cm_thread = 0;
+	if (rpc_rdma_state.cm_thread_id) {
+		pthread_join(rpc_rdma_state.cm_thread_id, NULL);
+		rpc_rdma_state.cm_thread_id = 0;
 	}
-	if (rpc_rdma_state.cq_thread) {
-		pthread_join(rpc_rdma_state.cq_thread, NULL);
-		rpc_rdma_state.cq_thread = 0;
+	if (rpc_rdma_state.cq_thread_id) {
+		pthread_join(rpc_rdma_state.cq_thread_id, NULL);
+		rpc_rdma_state.cq_thread_id = 0;
 	}
-	if (rpc_rdma_state.stats_thread) {
-		pthread_join(rpc_rdma_state.stats_thread, NULL);
-		rpc_rdma_state.stats_thread = 0;
+	if (rpc_rdma_state.stats_thread_id) {
+		pthread_join(rpc_rdma_state.stats_thread_id, NULL);
+		rpc_rdma_state.stats_thread_id = 0;
 	}
 }
 
@@ -1610,7 +1610,7 @@ rpc_rdma_setup_stuff(RDMAXPRT *xprt)
 	/* Located in this function for convenience, called by both
 	 * client and server. Each is only done once for all connections.
 	 */
-	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cq_thread,
+	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cq_thread_id,
 		rpc_rdma_cq_thread, xprt, &rpc_rdma_state.cq_epollfd);
 	if (rc) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -1620,7 +1620,7 @@ rpc_rdma_setup_stuff(RDMAXPRT *xprt)
 	}
 
 	if (xprt->xa->statistics_prefix != NULL
-	 && (rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.stats_thread,
+	 && (rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.stats_thread_id,
 		rpc_rdma_stats_thread, xprt, &rpc_rdma_state.stats_epollfd))) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
 			"%s:%u ERROR (return)",
@@ -1815,7 +1815,7 @@ rpc_rdma_bind_server(RDMAXPRT *xprt)
 	xprt->state = RDMAXS_LISTENING;
 	atomic_inc_int32_t(&rpc_rdma_state.run_count);
 
-	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cm_thread,
+	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cm_thread_id,
 		rpc_rdma_cm_thread, xprt, &rpc_rdma_state.cm_epollfd);
 	if (rc) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,
@@ -2185,7 +2185,7 @@ rpc_rdma_connect(RDMAXPRT *xprt)
 		return EINVAL;
 	}
 
-	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cm_thread,
+	rc = rpc_rdma_thread_create_epoll(&rpc_rdma_state.cm_thread_id,
 		rpc_rdma_cm_thread, xprt, &rpc_rdma_state.cm_epollfd);
 	if (rc) {
 		__warnx(TIRPC_DEBUG_FLAG_ERROR,

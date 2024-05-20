@@ -236,7 +236,6 @@ xdr_rdma_ioq_uv_fetch(struct xdr_ioq *xioq, struct poolq_head *ioqh,
 				break;
 		} else {
 			if (xd) {
-				pthread_mutex_unlock(&ioqh->qmutex);
 
 				if (ioqh == &xd->inbufs_data.uvqh) {
 					xdr_rdma_add_inbufs_data(xd);
@@ -260,7 +259,6 @@ xdr_rdma_ioq_uv_fetch(struct xdr_ioq *xioq, struct poolq_head *ioqh,
 					rpc_rdma_allocate_cbc_locked(ioqh);
 				}
 
-				pthread_mutex_lock(&ioqh->qmutex);
 			}
 		}
 	}

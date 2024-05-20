@@ -124,9 +124,9 @@ svc_rdma_rendezvous(SVCXPRT *xprt)
 	SVC_REF(xprt, SVC_REF_FLAG_NONE);
 	xd->sm_dr.xprt.xp_parent = xprt;
 
-	int retval = 0;
+	int retval = xprt->xp_dispatch.rendezvous_cb(&xd->sm_dr.xprt);
 
-	if (xprt->xp_dispatch.rendezvous_cb(&xd->sm_dr.xprt)) {
+	if (retval) {
 		__warnx(TIRPC_DEBUG_FLAG_WARN,
 			"%s:%u ERROR (return %d)",
 			__func__, __LINE__, retval);

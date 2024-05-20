@@ -765,6 +765,13 @@ xdr_rdma_wait_write_cb(RDMAXPRT *xprt, struct rpc_rdma_cbc *cbc, int sge,
 typedef struct xdr_write_list wl_t;
 #define wl(ptr) ((struct xdr_write_list*)ptr)
 
+/*
+ * Single-list chunks (HLOO = Handle32 Length32 Offset64):
+ *
+ *  Read chunklist (a linked list):
+ *   N elements, position P (same P for all chunks of same arg!):
+ *    1 - PHLOO - 1 - PHLOO - ... - 1 - PHLOO - 0
+ */
 static inline void
 xdr_rdma_skip_read_list(uint32_t **pptr)
 {
@@ -778,6 +785,13 @@ xdr_rdma_skip_read_list(uint32_t **pptr)
 	__warnx(TIRPC_DEBUG_FLAG_XDR, "%s: ptr1 %p ptr2 %p diff %d", __func__, ptr1, *pptr, (*pptr) - ptr1);
 }
 
+/*
+ * Single-list chunks (HLOO = Handle32 Length32 Offset64):
+ *
+ *  Write chunklist (a list of (one) counted array):
+ *   N elements:
+ *    1 - N - HLOO - HLOO - ... - HLOO - 0
+ */
 static inline void
 xdr_rdma_skip_write_list(uint32_t **pptr)
 {
@@ -792,6 +806,13 @@ xdr_rdma_skip_write_list(uint32_t **pptr)
 	__warnx(TIRPC_DEBUG_FLAG_XDR, "%s: ptr1 %p ptr2 %p diff %d", __func__, ptr1, *pptr, (*pptr) - ptr1);
 }
 
+/*
+ * Single-list chunks (HLOO = Handle32 Length32 Offset64):
+ *
+ *  Reply chunk (a counted array):
+ *   N elements:
+ *    1 - N - HLOO - HLOO - ... - HLOO
+ */
 static inline void
 xdr_rdma_skip_reply_array(uint32_t **pptr)
 {
@@ -942,7 +963,7 @@ xdr_rdma_callq(RDMAXPRT *xd)
 /* Split b_addr into buf_count chunks of size buf_size and
  * add it to uv_head */
 static void
-xdr_rdma_add_bufs(RDMAXPRT *xd, struct ibv_mr *mr,
+xdr_rdma_add_bufs_locked(RDMAXPRT *xd, struct ibv_mr *mr,
     struct xdr_ioq_uv_head *uv_head, xdr_ioq_uv_type_t buf_type,
     uint32_t buf_size, uint32_t buf_count, uint8_t *b_addr)
 {
@@ -950,8 +971,6 @@ xdr_rdma_add_bufs(RDMAXPRT *xd, struct ibv_mr *mr,
 	/* Each pre-allocated buffer has a corresponding xdr_ioq_uv,
 	 * stored on the pool queues.
 	 */
-
-	pthread_mutex_lock(&uv_head->uvqh.qmutex);
 
 	for (int qcount = 0;
 	     qcount < buf_count;
@@ -980,6 +999,24 @@ xdr_rdma_add_bufs(RDMAXPRT *xd, struct ibv_mr *mr,
 
 		b_addr += buf_size;
 	}
+}
+
+/* Split b_addr into buf_count chunks of size buf_size and
+ * add it to uv_head */
+static void
+xdr_rdma_add_bufs(RDMAXPRT *xd, struct ibv_mr *mr,
+    struct xdr_ioq_uv_head *uv_head, xdr_ioq_uv_type_t buf_type,
+    uint32_t buf_size, uint32_t buf_count, uint8_t *b_addr)
+{
+
+	/* Each pre-allocated buffer has a corresponding xdr_ioq_uv,
+	 * stored on the pool queues.
+	 */
+
+	pthread_mutex_lock(&uv_head->uvqh.qmutex);
+
+	xdr_rdma_add_bufs_locked(xd, mr, uv_head, buf_type,
+	    buf_size, buf_count, b_addr);
 
 	pthread_mutex_unlock(&uv_head->uvqh.qmutex);
 }
@@ -1052,7 +1089,7 @@ xdr_rdma_add_outbufs_hdr(RDMAXPRT *xd)
 
 	b = buffer_aligned;
 
-	xdr_rdma_add_bufs(xd, mr, &xd->outbufs_hdr, UV_HDR,
+	xdr_rdma_add_bufs_locked(xd, mr, &xd->outbufs_hdr, UV_HDR,
 	    xd->sm_dr.send_hdr_sz, hdr_qdepth, b);
 
 	xdr_rdma_update_extra_bufs(xd, mr, buffer_total, buffer_aligned,
@@ -1086,7 +1123,7 @@ xdr_rdma_add_outbufs_data(RDMAXPRT *xd)
 
 	b = buffer_aligned;
 
-	xdr_rdma_add_bufs(xd, mr, &xd->outbufs_data, UV_DATA,
+	xdr_rdma_add_bufs_locked(xd, mr, &xd->outbufs_data, UV_DATA,
 	    xd->sm_dr.sendsz, data_qdepth, b);
 
 	xdr_rdma_update_extra_bufs(xd, mr, buffer_total, buffer_aligned,
@@ -1120,7 +1157,7 @@ xdr_rdma_add_inbufs_hdr(RDMAXPRT *xd)
 
 	b = buffer_aligned;
 
-	xdr_rdma_add_bufs(xd, mr, &xd->inbufs_hdr, UV_HDR,
+	xdr_rdma_add_bufs_locked(xd, mr, &xd->inbufs_hdr, UV_HDR,
 	    xd->sm_dr.recv_hdr_sz, hdr_qdepth, b);
 
 	xdr_rdma_update_extra_bufs(xd, mr, buffer_total, buffer_aligned,
@@ -1154,7 +1191,7 @@ xdr_rdma_add_inbufs_data(RDMAXPRT *xd)
 
 	b = buffer_aligned;
 
-	xdr_rdma_add_bufs(xd, mr, &xd->inbufs_data, UV_DATA,
+	xdr_rdma_add_bufs_locked(xd, mr, &xd->inbufs_data, UV_DATA,
 	    xd->sm_dr.recvsz, data_qdepth, b);
 
 	xdr_rdma_update_extra_bufs(xd, mr, buffer_total, buffer_aligned,
@@ -1352,6 +1389,48 @@ xdr_rdma_clnt_reply(XDR *xdrs, u_int32_t xid)
  *			call request is in recvq
  *
  * called by svc_rdma_recv()
+ *
+ * Inlined short RPC:
+ *          Requester                             Responder
+ *              |        RDMA Send (RDMA_MSG)         |
+ *         Call |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Send (RDMA_MSG)         |
+ *              |   <------------------------------   | Reply
+ *
+ *
+ * RPC with DDP data with read chunks:
+ *          Requester                             Responder
+ *              |        RDMA Send (RDMA_MSG)         |
+ *         Call |   ------------------------------>   |
+ *              |        RDMA Read                    |
+ *              |   <------------------------------   |
+ *              |        RDMA Response (arg data)     |
+ *              |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Send (RDMA_MSG)         |
+ *              |   <------------------------------   | Reply
+ *
+ *
+ * Long RPC without DDP data with read chunks:
+ *          Requester                             Responder
+ *              |        RDMA Send (RDMA_NOMSG)       |
+ *         Call |   ------------------------------>   |
+ *              |        RDMA Read                    |
+ *              |   <------------------------------   |
+ *              |        RDMA Response (RPC call)     |
+ *              |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Send (RDMA_MSG)         |
+ *              |   <------------------------------   | Reply
+ *
+ *
  */
 bool
 xdr_rdma_svc_recv(struct rpc_rdma_cbc *cbc, u_int32_t xid)
@@ -1861,6 +1940,42 @@ xdr_rdma_clnt_flushout(struct rpc_rdma_cbc *cbc)
  *
  * For no reply_list and write_list, we reply as
  * rdma_send(nfs_header + nfs_response + rdma_header)
+ *
+ * Inline reply:
+ *           Requester                             Responder
+ *              |        RDMA Send (RDMA_MSG)         |
+ *         Call |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Send (RDMA_MSG)         |
+ *              |   <------------------------------   | Reply
+ *
+ *
+ * Reply with write chunk DDP data:
+ *          Requester                             Responder
+ *              |        RDMA Send (RDMA_MSG)         |
+ *         Call |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Write (result data)     |
+ *              |   <------------------------------   |
+ *              |        RDMA Send (RDMA_MSG)         |
+ *              |   <------------------------------   | Reply
+ *
+ *
+ * Reply with reply chunk non DDP long reply:
+ *          Requester                             Responder
+ *              |        RDMA Send (RDMA_MSG)         |
+ *         Call |   ------------------------------>   |
+ *              |                                     |
+ *              |                                     | Processing
+ *              |                                     |
+ *              |        RDMA Write (RPC reply)       |
+ *              |   <------------------------------   |
+ *              |        RDMA Send (RDMA_NOMSG)       |
+ *              |   <------------------------------   | Reply
  *
  */
 bool
